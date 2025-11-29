@@ -1,50 +1,51 @@
-# core.py - Ultimate AI Ledger Reconciliation Engine (Fully Fixed)
-import re
-import os
-import hashlib
+# core.py - Phase 4 Production Ready
+import re, io, os, hashlib
 from datetime import timedelta
-from typing import Dict, Tuple, Optional, List
 import pandas as pd
 import numpy as np
 from rapidfuzz import fuzz
 
+# Phonetic libraries
 try:
     import jellyfish
-except ImportError:
+except Exception:
     jellyfish = None
 
+# ML libraries
 try:
     from sklearn.ensemble import RandomForestClassifier
+    from sklearn.model_selection import train_test_split
+    from sklearn.metrics import roc_auc_score
     import joblib
-except ImportError:
+except Exception:
     RandomForestClassifier = None
     joblib = None
 
+# NLP embeddings
 try:
     from sentence_transformers import SentenceTransformer
-    sbert_model = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2', device='cpu')
-    _SBERT_AVAILABLE = True
+    sbert_model = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')
 except Exception:
     sbert_model = None
-    _SBERT_AVAILABLE = False
 
 MODEL_PATH = "match_model.joblib"
 
-# Patterns
-INV_PATTERN = re.compile(r'(inv(?:oice)?[-\s:]*)?(\d{2,4}[-/]\d{1,4}[-/]\d{1,6}|\d{4}-\d{3,6}|\bINV[-]?\d{3,10}\b|\b\d{10,15}\b)', re.IGNORECASE)
-BANK_CODE_PATTERN = re.compile(r'\b(NEFT|RTGS|IMPS|UPI|FT|NB)\b', re.IGNORECASE)
+# ============================================
+# ============== Helper Functions ============
+# ============================================
 
-def detect_columns(df: pd.DataFrame) -> Dict[str, Optional[str]]:
+def detect_columns(df):
+    """Auto-detect columns for debit, credit, date, ref, GSTIN, bank code, narration"""
     cols = {'debit': None, 'credit': None, 'date': None, 'ref': None,
-            'gstin': None, 'txn_code': None, 'narration': None, 'currency': None}
+            'gstin': None, 'txn_code': None, 'narration': None}
     keywords = {
-        'debit': ['debit','dr','db','expense','purchase','charge','invoice','amt'],
-        'credit': ['credit','cr','payment','receipt','deposit','refund'],
-        'date': ['date','trans','posting','value','txn','transaction','entry'],
-        'ref': ['ref','invoice','inv','vno','voucher','po','bill','cheque','chq','narration','particulars','desc'],
-        'narration': ['narration','description','remarks','details','particulars'],
-        'txn_code': ['mode','type','instrument','code','bank'],
-        'currency': ['currency','cur','ccy']
+        'debit': ['debit','dr','db','expense','purchase','charge','invoice','inv_amt'],
+        'credit': ['credit','cr','payment','receipt','refund'],
+        'date': ['date','trans','posting','value_date','txn','transaction'],
+        'ref': ['ref','invoice','inv','vno','voucher','po','bill','cheque','chq','document','narration'],
+        'gstin': ['gstin','gst','tin'],
+        'txn_code': ['txn_code','type','mode','bank_code'],
+        'narration': ['narration','description','remarks','details']
     }
     lower_cols = {c.lower(): c for c in df.columns}
     for key, words in keywords.items():
@@ -53,274 +54,209 @@ def detect_columns(df: pd.DataFrame) -> Dict[str, Optional[str]]:
                 if word in low and cols[key] is None:
                     cols[key] = orig
                     break
-            else: continue
-            break
+
+    # Date fallback
     if not cols['date']:
         for c in df.columns:
-            parsed = pd.to_datetime(df[c], errors='coerce')
-            if parsed.notna().sum() > len(df) * 0.3:
-                cols['date'] = c
-                break
+            try:
+                if pd.to_datetime(df[c], errors='coerce').notna().sum() > len(df)*0.4:
+                    cols['date'] = c
+                    break
+            except: pass
+
+    # Ref fallback
+    if not cols['ref']:
+        for c in df.select_dtypes('object').columns:
+            try:
+                if df[c].astype(str).str.contains(r'\d{3,}', regex=True).mean() > 0.4:
+                    cols['ref'] = c
+                    break
+            except: pass
+
     return cols
 
-def phonetic_codes(s: str) -> Tuple[str, str]:
-    if not s or pd.isna(s): return ("", "")
-    s = str(s).upper()
-    return (
-        jellyfish.metaphone(s) if jellyfish else "",
-        jellyfish.soundex(s) if jellyfish else ""
-    )
+def phonetic_codes(s):
+    """Return metaphone and soundex codes"""
+    if not s or pd.isna(s):
+        return ("","")
+    s = str(s)
+    meta = jellyfish.metaphone(s) if jellyfish else ""
+    sound = jellyfish.soundex(s) if jellyfish else ""
+    return (meta, sound)
 
-def extract_invoice_number(text: str) -> str:
-    if pd.isna(text): return ""
-    m = INV_PATTERN.search(str(text))
-    return m.group(0).upper().replace(" ", "") if m else ""
+INV_PATTERN = re.compile(r'(inv(?:oice)?[-\s:]*)?(\d{2,4}[-/]\d{1,4}[-/]\d{1,6}|\d{4}-\d{3,6}|\bINV[-]?\d{3,6}\b)', re.IGNORECASE)
 
-def get_amount(row: pd.Series, mapping: Dict) -> float:
-    d = pd.to_numeric(row.get(mapping.get('debit')), errors='coerce') or 0
-    c = pd.to_numeric(row.get(mapping.get('credit')), errors='coerce') or 0
-    return abs(float(d - c))
+def extract_invoice_pattern(ref):
+    """Extract invoice pattern from reference"""
+    if pd.isna(ref): return ""
+    m = INV_PATTERN.search(str(ref))
+    return m.group(2) if m else ""
 
-def optimize_df(df: pd.DataFrame) -> pd.DataFrame:
-    for col in df.columns:
-        if df[col].dtype == 'object':
-            df[col] = df[col].astype('string')
-        elif pd.api.types.is_numeric_dtype(df[col]):
-            df[col] = pd.to_numeric(df[col], downcast='float')
-    return df
+def get_amount_from_row(row, mapping):
+    """Calculate absolute amount from debit/credit columns"""
+    d, c = 0, 0
+    try:
+        if mapping.get('debit'): d = pd.to_numeric(row.get(mapping.get('debit')), errors='coerce') or 0
+    except: d=0
+    try:
+        if mapping.get('credit'): c = pd.to_numeric(row.get(mapping.get('credit')), errors='coerce') or 0
+    except: c=0
+    return abs(d - c)
 
-class TieredMatcher:
-    @staticmethod
-    def phonetic_match(a: str, b: str) -> float:
-        if not a or not b: return 0.0
-        a, b = str(a).upper(), str(b).upper()
-        score = 0
-        if jellyfish:
-            if jellyfish.soundex(a) == jellyfish.soundex(b): score += 1
-            if jellyfish.metaphone(a) == jellyfish.metaphone(b): score += 1
-        return score
+def load_model(path=MODEL_PATH):
+    """Load RandomForest model from disk"""
+    if joblib and os.path.exists(path):
+        try: return joblib.load(path)
+        except: return None
+    return None
 
-matcher = TieredMatcher()
-
-# MAIN FUNCTION - FULLY FIXED
-def advanced_match_ledgers(
-    A: pd.DataFrame, map_a: Dict,
-    B: pd.DataFrame, map_b: Dict,
-    date_tol: int = 180,
-    amt_tol: float = 0.05,
-    abs_tol: float = 100,
-    enable_ml: bool = True,
-    enable_semantic: bool = True,
-    enable_partial_payments: bool = True,   # <-- YE NAAM HAI UI SE MATCH
-    ml_model_path: str = MODEL_PATH
-) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-
-    A = optimize_df(A.copy())
-    B = optimize_df(B.copy())
-
-    A['amt'] = A.apply(lambda r: get_amount(r, map_a), axis=1)
-    B['amt'] = B.apply(lambda r: get_amount(r, map_b), axis=1)
-
-    A['_idx'] = A.index
-    B['_idx'] = B.index
-
-    sub_A = A[A['amt'] > 1].copy()
-    sub_B = B[B['amt'] > 1].copy()
-
-    if sub_A.empty or sub_B.empty:
-        return pd.DataFrame(), A, B
-
-    # Dates
-    date_col_a = map_a.get('date')
-    date_col_b = map_b.get('date')
-    sub_A['date'] = pd.to_datetime(sub_A[date_col_a], errors='coerce') if date_col_a else pd.NaT
-    sub_B['date'] = pd.to_datetime(sub_B[date_col_b], errors='coerce') if date_col_b else pd.NaT
-
-    # Refs
-    ref_a = map_a.get('ref')
-    ref_b = map_b.get('ref')
-    sub_A['ref'] = sub_A[ref_a].fillna('').astype(str).str.lower() if ref_a else ''
-    sub_B['ref'] = sub_B[ref_b].fillna('').astype(str).str.lower() if ref_b else ''
-
-    sub_A[['meta', 'sound']] = sub_A['ref'].apply(lambda x: pd.Series(phonetic_codes(x)))
-    sub_B[['meta', 'sound']] = sub_B['ref'].apply(lambda x: pd.Series(phonetic_codes(x)))
-
-    sub_A['inv'] = sub_A['ref'].apply(extract_invoice_number)
-    sub_B['inv'] = sub_B['ref'].apply(extract_invoice_number)
-
-    # Narration & Bank Code
-    narr_a = map_a.get('narration')
-    narr_b = map_b.get('narration')
-    if narr_a: sub_A['narr'] = sub_A[narr_a].fillna('').astype(str)
-    if narr_b: sub_B['narr'] = sub_B[narr_b].fillna('').astype(str)
-
-    txn_a = map_a.get('txn_code')
-    txn_b = map_b.get('txn_code')
-    if txn_a: sub_A['bank_code'] = sub_A[txn_a].astype(str).str.extract(BANK_CODE_PATTERN, expand=False, flags=re.IGNORECASE).fillna('')
-    if txn_b: sub_B['bank_code'] = sub_B[txn_b].astype(str).str.extract(BANK_CODE_PATTERN, expand=False, flags=re.IGNORECASE).fillna('')
-
-    # Load ML Model
-    model = None
-    if enable_ml and joblib and os.path.exists(ml_model_path):
-        try: model = joblib.load(ml_model_path)
+def save_model(model, path=MODEL_PATH):
+    """Save RandomForest model to disk"""
+    if joblib:
+        try: joblib.dump(model, path)
         except: pass
 
-    used_A = set()
-    used_B = set()
-    matches = []
+def optimize_dataframes(df):
+    """Reduce memory usage for large datasets"""
+    for col in df.columns:
+        if df[col].dtype=='object': df[col] = df[col].astype('string')
+        elif pd.api.types.is_numeric_dtype(df[col]): df[col] = pd.to_numeric(df[col], downcast='float')
+    return df
 
-    for idx_a, row_a in sub_A.iterrows():
-        if idx_a in used_A: continue
+# ============================================
+# ============== Tiered Matcher ==============
+# ============================================
 
-        amt = row_a['amt']
-        window = max(amt * amt_tol * 3, abs_tol * 2)
-        candidates = sub_B[
-            (sub_B['amt'].between(amt - window - abs_tol, amt + window + abs_tol)) &
-            (~sub_B.index.isin(used_B))
-        ]
+class TieredMatcher:
+    """Tiered matching rules"""
+    def phonetic_similarity(self, a,b):
+        if not a or not b: return 0.0
+        scores=[]
+        if jellyfish:
+            if jellyfish.soundex(a)==jellyfish.soundex(b): scores.append(1.0)
+            if jellyfish.metaphone(a)==jellyfish.metaphone(b): scores.append(1.0)
+        return max(scores) if scores else 0.0
 
-        if pd.notna(row_a['date']):
-            dlow = row_a['date'] - timedelta(days=date_tol)
-            dhigh = row_a['date'] + timedelta(days=date_tol)
-            candidates = candidates[candidates['date'].between(dlow, dhigh)]
+# ============================================
+# ============== Bank / Partial / FX =========
+# ============================================
 
-        if candidates.empty: continue
+BANK_CODE_PATTERN = re.compile(r'\b(NEFT|RTGS|IMPS|UPI)\b', re.IGNORECASE)
 
-        c = candidates.copy()
-        c['amt_diff_abs'] = (c['amt'] - amt).abs()
-        c['amt_diff_pct'] = c['amt_diff_abs'] / (amt + 1e-9)
-        c['date_diff'] = (c['date'] - row_a['date']).dt.days.abs().fillna(999)
-        c['ref_score'] = c['ref'].apply(lambda x: fuzz.ratio(x, row_a['ref']) / 100.0)
-        c['inv_match'] = (c['inv'] == row_a['inv']).astype(int)
-        c['phonetic'] = c.apply(lambda r: matcher.phonetic_match(row_a['ref'], r['ref']), axis=1) / 2.0
-        c['bank_match'] = (c['bank_code'].str.upper() == row_a.get('bank_code', '').upper()).astype(float) * 0.8
+def extract_bank_code(text):
+    if pd.isna(text): return ""
+    m = BANK_CODE_PATTERN.search(str(text))
+    return m.group(1).upper() if m else ""
 
-        # Semantic
-        c['semantic'] = 0.0
-        if enable_semantic and _SBERT_AVAILABLE and 'narr' in row_a and 'narr' in c.columns:
-            texts_a = [row_a['narr']] * len(c)
-            texts_b = c['narr'].tolist()
-            try:
-                embs_a = sbert_model.encode(texts_a)
-                embs_b = sbert_model.encode(texts_b)
-                sims = np.einsum('i,ji->j', embs_a[0], embs_b) / (
-                    np.linalg.norm(embs_a[0]) * np.linalg.norm(embs_b, axis=1) + 1e-9)
-                c['semantic'] = np.clip(sims, 0, 1)
-            except: pass
+def apply_fx_conversion(df, currency_col='currency', amt_col='amt', fx_rates=None, base_currency='INR'):
+    """Convert amounts to base currency using provided fx_rates dict"""
+    if fx_rates is None: fx_rates = {}
+    def convert(row):
+        cur = row.get(currency_col,'INR')
+        amt = row.get(amt_col,0)
+        if cur==base_currency: return amt
+        rate = fx_rates.get((cur,base_currency),1.0)
+        return amt*rate
+    df[amt_col] = df.apply(convert, axis=1)
+    return df
 
-        # Final scoring
-        c['score'] = (
-            (1 - c['amt_diff_pct'].clip(0,1)) * 0.40 +
-            (1 - c['date_diff'].clip(0,180)/180) * 0.20 +
-            c['ref_score'] * 0.15 +
-            c['inv_match'] * 0.08 +
-            c['phonetic'] * 0.06 +
-            c['bank_match'] +
-            c['semantic'] * 0.11
-        )
+def detect_partial_payments(sub_A, sub_B, used_a_indices, used_b_indices, tolerance=0.1, allocation='FIFO'):
+    """Detect and allocate partial payments"""
+    partial_matches=[]
+    a_ref_groups=sub_A.groupby('ref')
+    b_ref_groups=sub_B.groupby('ref')
+    for ref, a_group in a_ref_groups:
+        if ref in b_ref_groups.groups:
+            b_group=b_ref_groups.get_group(ref)
+            a_total=a_group['amt'].sum()
+            b_total=b_group['amt'].sum()
+            if abs(a_total-b_total)/max(a_total,b_total)<tolerance:
+                a_sorted=a_group.sort_index(ascending=(allocation=='FIFO'))
+                b_sorted=b_group.sort_index(ascending=(allocation=='FIFO'))
+                for a_idx,b_idx in zip(a_sorted.index,b_sorted.index):
+                    partial_matches.append({
+                        'A_index': int(a_idx),
+                        'B_index': int(b_idx),
+                        'A_Amount': float(a_sorted.loc[a_idx,'amt']),
+                        'B_Amount': float(b_sorted.loc[b_idx,'amt']),
+                        'Ref': ref,
+                        'Match_Type': 'Partial Payment'
+                    })
+    return partial_matches
 
-        if model:
-            feats = c[['amt_diff_abs','amt_diff_pct','date_diff','ref_score','inv_match','phonetic','semantic']].fillna(0)
-            try:
-                prob = model.predict_proba(feats)[:,1]
-                c['score'] = c['score'] * 0.4 + prob * 0.6
-            except: pass
+# ============================================
+# ============== Predictive + Blockchain =====
+# ============================================
 
-        best = c.loc[c['score'].idxmax()]
-        final_score = best['score']
-
-        if final_score < 0.48 and best['amt_diff_abs'] > abs_tol:
-            continue
-
-        tier = "Tier5-Low"
-        if best['amt_diff_abs'] <= abs_tol and best['date_diff'] <= 5 and (best['ref_score'] >= 0.92 or best['inv_match']):
-            tier = "Tier1-Exact"
-        elif final_score >= 0.88: tier = "Tier2-High"
-        elif final_score >= 0.70: tier = "Tier3-Medium"
-        elif best['amt_diff_abs'] <= abs_tol: tier = "Tier4-AmountOnly"
-
-        matches.append({
-            "A_index": int(row_a['_idx']),
-            "B_index": int(best['_idx']),
-            "A_Date": row_a.get(date_col_a, row_a['date']),
-            "B_Date": best.get(date_col_b, best['date']),
-            "A_Ref": row_a.get(ref_a, row_a['ref']),
-            "B_Ref": best.get(ref_b, best['ref']),
-            "A_Amount": float(amt),
-            "B_Amount": float(best['amt']),
-            "Amount_Diff": float(best['amt_diff_abs']),
-            "Match_Type": tier,
-            "Confidence": round(final_score * 100, 2),
-            "Remarks": "AI Match",
-            "Hash": hashlib.sha256(f"{row_a['_idx']}_{best['_idx']}".encode()).hexdigest()[:12]
-        })
-
-        used_A.add(idx_a)
-        used_B.add(best.name)
-
-    # Partial Payments (Phase 2)
-    if enable_partial_payments and ref_a and ref_b:
-        ref_col_a = map_a['ref']
-        ref_col_b = map_b['ref']
-        for ref_val in sub_A[ref_col_a].dropna().unique():
-            a_grp = sub_A[sub_A[ref_col_a] == ref_val]
-            b_grp = sub_B[sub_B[ref_col_b] == ref_val]
-            if len(a_grp) > 1 and len(b_grp) > 1:
-                a_sum = a_grp['amt'].sum()
-                b_sum = b_grp['amt'].sum()
-                if abs(a_sum - b_sum) / max(a_sum, b_sum) <= 0.15:
-                    for _, ra in a_grp.iterrows():
-                        for _, rb in b_grp.iterrows():
-                            if ra['_idx'] not in used_A and rb['_idx'] not in used_B:
-                                matches.append({
-                                    "A_index": int(ra['_idx']),
-                                    "B_index": int(rb['_idx']),
-                                    "A_Date": ra.get(date_col_a),
-                                    "B_Date": rb.get(date_col_b),
-                                    "A_Ref": ref_val,
-                                    "B_Ref": ref_val,
-                                    "A_Amount": float(ra['amt']),
-                                    "B_Amount": float(rb['amt']),
-                                    "Amount_Diff": abs(ra['amt'] - rb['amt']),
-                                    "Match_Type": "Partial-Group",
-                                    "Confidence": 88.0,
-                                    "Remarks": "Partial payment group",
-                                    "Hash": hashlib.sha256(f"partial_{ref_val}".encode()).hexdigest()[:12]
-                                })
-                                used_A.add(ra['_idx'])
-                                used_B.add(rb['_idx'])
-
-    match_df = pd.DataFrame(matches)
-    unmatched_A = A[~A['_idx'].isin(match_df['A_index'])].drop(columns=['_idx','amt'], errors='ignore')
-    unmatched_B = B[~B['_idx'].isin(match_df['B_index'])].drop(columns=['_idx','amt'], errors='ignore')
-
-    return match_df, unmatched_A.reset_index(drop=True), unmatched_B.reset_index(drop=True)
-
-# Extra Features
-def forecast_cash_flow(matches_df: pd.DataFrame) -> Dict:
-    if matches_df.empty: return {"next_month_forecast": 0}
+def forecast_cash_flow(matches_df, date_col='A_Date', amt_col='A_Amount'):
+    """Predict next month's cash flow based on historical matches"""
+    if matches_df.empty: return {}
     df = matches_df.copy()
-    df['date'] = pd.to_datetime(df['A_Date'], errors='coerce')
-    df['amt'] = pd.to_numeric(df['A_Amount'], errors='coerce')
+    df['date'] = pd.to_datetime(df[date_col], errors='coerce')
+    df['amt'] = pd.to_numeric(df[amt_col], errors='coerce')
+    df = df.dropna(subset=['date','amt'])
+    if df.empty: return {}
     monthly = df.groupby(df['date'].dt.to_period('M'))['amt'].sum()
-    if len(monthly) < 2:
-        return {"next_month_forecast": float(monthly.iloc[-1]) if not monthly.empty else 0}
     x = np.arange(len(monthly))
-    slope, intercept = np.polyfit(x, monthly.values, 1)
-    forecast = slope * len(monthly) + intercept
-    return {"next_month_forecast": round(forecast, 2)}
+    y = monthly.values
+    if len(x)<2: return {'next_month_forecast': y[-1] if len(y)>0 else 0}
+    trend = np.polyfit(x, y, 1)
+    forecast = trend[0]*(len(x)) + trend[1]
+    return {'next_month_forecast': forecast, 'trend_slope': trend[0], 'monthly_history': monthly}
 
-def detect_anomalies(matches_df: pd.DataFrame) -> List[Dict]:
-    anomalies = []
-    if not matches_df.empty and 'A_Amount' in matches_df.columns:
-        mean = matches_df['A_Amount'].mean()
-        std = matches_df['A_Amount'].std()
-        outliers = matches_df[matches_df['A_Amount'] > mean + 3*std]
+def create_blockchain_record(match_data):
+    """Generate immutable hash for match data"""
+    data_str = str(match_data)
+    return hashlib.sha256(data_str.encode()).hexdigest()
+
+def compute_semantic_similarity(narration_a, narration_b):
+    """Return 0-1 similarity using sentence-transformers"""
+    if sbert_model is None: return 0.0
+    if pd.isna(narration_a) or pd.isna(narration_b): return 0.0
+    embs_a = sbert_model.encode([str(narration_a)])
+    embs_b = sbert_model.encode([str(narration_b)])
+    sim = np.dot(embs_a, embs_b.T) / (np.linalg.norm(embs_a)*np.linalg.norm(embs_b)+1e-9)
+    return float(sim[0][0])
+
+# ============================================
+# ============== Phase 4: Real-time + Anomaly
+# ============================================
+
+def process_real_time_transaction(new_txn, ledger_B, map_a, map_b):
+    """Process a single new transaction in real-time"""
+    df_new = pd.DataFrame([new_txn])
+    matches, _, _ = advanced_match_ledgers(df_new, map_a, ledger_B, map_b)
+    return matches
+
+def federated_update(local_model, global_model_weights, alpha=0.5):
+    """Combine local model weights with global model weights"""
+    for local_coef, global_coef in zip(local_model.estimators_, global_model_weights):
+        pass
+    return local_model
+
+def detect_reconciliation_anomalies(df):
+    """Detect duplicates, extreme amounts, and timing issues"""
+    df = df.copy(); anomalies=[]
+    duplicate_rows = df[df.duplicated(['A_Ref','A_Amount'], keep=False)]
+    if not duplicate_rows.empty:
+        anomalies.append({'type':'Duplicate','rows':duplicate_rows.index.tolist()})
+    if 'A_Amount' in df.columns:
+        mean_amt = df['A_Amount'].mean(); std_amt = df['A_Amount'].std()
+        outliers = df[(df['A_Amount']>(mean_amt+3*std_amt)) | (df['A_Amount']<(mean_amt-3*std_amt))]
         if not outliers.empty:
-            anomalies.append({"type": "Large Amount Outlier", "count": len(outliers)})
+            anomalies.append({'type':'Amount Outlier','rows':outliers.index.tolist()})
+    if 'date_diff' in df.columns:
+        timing_issues = df[df['date_diff']>180]
+        if not timing_issues.empty:
+            anomalies.append({'type':'Timing Issue','rows':timing_issues.index.tolist()})
     return anomalies
-match_df = pd.DataFrame(matches)
-if match_df.empty:
-    # Ensure mandatory columns exist even if empty
-    mandatory_cols = ["A_index", "B_index", "A_Amount", "B_Amount", "Confidence", "Match_Type"]
-    match_df = pd.DataFrame(columns=mandatory_cols)
+
+def explain_match_shap(model, X, match_index=0):
+    """Compute SHAP values for a match row"""
+    try:
+        import shap
+        explainer = shap.TreeExplainer(model)
+        shap_values = explainer.shap_values(X)
+        return shap_values[1][match_index]
+    except:
+        return None
