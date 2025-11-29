@@ -201,3 +201,18 @@ if feedback_file and st.sidebar.button("Retrain Model"):
     model.fit(X, y)
     save_model(model)
     st.sidebar.success("Model retrained successfully!")
+# Phase 3 additions to UI.py
+
+# Predictive Cash Flow Display
+st.subheader("Predictive Cash Flow")
+from core import forecast_cash_flow
+forecast_info = forecast_cash_flow(matches_df)
+if forecast_info:
+    st.metric("Next Month Forecast (₹)", f"{forecast_info['next_month_forecast']:.2f}")
+    st.write("Trend Slope per Month:", f"{forecast_info['trend_slope']:.2f}")
+    st.line_chart(forecast_info['monthly_history'])
+
+# Blockchain Hash column in Matches
+st.subheader("Blockchain Audit Hash")
+if not matches_df.empty:
+    st.dataframe(matches_df[['A_Ref','B_Ref','Match_Type','Score']].assign(Blockchain_Hash=matches_df.apply(lambda r: create_blockchain_record(r.to_dict()), axis=1)))
