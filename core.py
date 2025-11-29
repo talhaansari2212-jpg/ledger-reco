@@ -43,7 +43,13 @@ def advanced_match_ledgers(A, map_a, B, map_b, date_tol=7, amt_tol=0.05, abs_tol
     # Data clean copy
     A = A.copy()
     B = B.copy()
+    # After date conversion, add these lines for safety:
+    sub_A.dropna(subset=['date'], inplace=True)
+    sub_B.dropna(subset=['date'], inplace=True)
     
+    # Check if dataframes are empty after dropping NaT
+    if sub_A.empty or sub_B.empty:
+        return pd.DataFrame(), A, B # Return empty if no valid dates found
     # Track original indices to filter Unmatched rows later
     A['_orig_idx'] = A.index
     B['_orig_idx'] = B.index
