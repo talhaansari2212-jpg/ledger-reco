@@ -117,7 +117,11 @@ class TieredMatcher:
             if jellyfish.soundex(a)==jellyfish.soundex(b): scores.append(1.0)
             if jellyfish.metaphone(a)==jellyfish.metaphone(b): scores.append(1.0)
         return max(scores) if scores else 0.0
-
+def detect_partial_payments(df_a, df_b, used_a, used_b):
+    """Placeholder for complex partial payment detection logic."""
+    # Is function mein partial payment ki complex logic aayegi.
+    # Abhi ke liye yeh sirf ek khaali list return karega.
+    return []
 # ================== Advanced Ledger Matching ==================
 def advanced_match_ledgers(A, map_a, B, map_b,
                           date_tol=180, amt_tol=0.05, abs_tol=50,
