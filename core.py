@@ -222,7 +222,6 @@ def advanced_match_ledgers(A, map_a, B, map_b,
 
     # Partial Payments Detection
     if enable_partial_payments:
-        from core import detect_partial_payments
         partials = detect_partial_payments(sub_A, sub_B, used_a, used_b)
         for p in partials:
             matches.append({
