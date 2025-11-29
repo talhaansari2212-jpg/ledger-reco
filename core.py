@@ -1,5 +1,3 @@
-# core.py → 100% WORKING VERSION (copy exactly as is)
-
 import pandas as pd
 from rapidfuzz import fuzz
 import numpy as np
@@ -38,10 +36,14 @@ def detect_columns(df):
 
     return cols
 
-
 def advanced_match_ledgers(A, map_a, B, map_b, date_tol=7, amt_tol=0.05):
+    # Data clean copy
     A = A.copy()
     B = B.copy()
+    
+    # Track original indices to filter later
+    A['_orig_idx'] = A.index
+    B['_orig_idx'] = B.index
 
     def get_amount(row, mapping):
         d = pd.to_numeric(row.get(mapping.get('debit')), errors='coerce') or 0
@@ -51,19 +53,23 @@ def advanced_match_ledgers(A, map_a, B, map_b, date_tol=7, amt_tol=0.05):
     A['amt'] = A.apply(lambda r: get_amount(r, map_a), axis=1)
     B['amt'] = B.apply(lambda r: get_amount(r, map_b), axis=1)
 
-    A = A[A['amt'] > 0].reset_index(drop=True)
-    B = B[B['amt'] > 0].reset_index(drop=True)
+    # Filter strictly for matching process (ignoring 0 amounts)
+    # Note: We work on subsets but keep track of indices
+    sub_A = A[A['amt'] > 0].copy()
+    sub_B = B[B['amt'] > 0].copy()
 
-    A['date'] = pd.to_datetime(A[map_a['date']], errors='coerce')
-    B['date'] = pd.to_datetime(B[map_b['date']], errors='coerce')
-    A['ref'] = A[map_a['ref']].astype(str).str.lower().str.strip()
-    B['ref'] = B[map_b['ref']].astype(str).str.lower().str.strip()
+    sub_A['date'] = pd.to_datetime(sub_A[map_a['date']], errors='coerce')
+    sub_B['date'] = pd.to_datetime(sub_B[map_b['date']], errors='coerce')
+    sub_A['ref'] = sub_A[map_a['ref']].astype(str).str.lower().str.strip()
+    sub_B['ref'] = sub_B[map_b['ref']].astype(str).str.lower().str.strip()
 
     matches = []
-    used = set()
+    used_b_indices = set()
+    used_a_indices = set()
 
-    for _, a_row in A.iterrows():
-        cand = B[~B.index.isin(used)].copy()
+    for _, a_row in sub_A.iterrows():
+        # Look in B where index not used yet
+        cand = sub_B[~sub_B.index.isin(used_b_indices)].copy()
         if cand.empty: continue
 
         cand['amt_diff'] = (cand['amt'] - a_row['amt']).abs() / (a_row['amt'] + 1)
@@ -75,6 +81,8 @@ def advanced_match_ledgers(A, map_a, B, map_b, date_tol=7, amt_tol=0.05):
                         (cand['ref_score']/100) * 0.2
 
         best = cand.loc[cand['score'].idxmax()]
+        
+        # Threshold Check
         if best['score'] > 0.58 and best['amt_diff'] <= amt_tol*3 and best['date_diff'] <= date_tol*4:
             matches.append({
                 "A_Date": a_row[map_a['date']], "A_Ref": a_row[map_a['ref']], "A_Amount": a_row['amt'],
@@ -82,6 +90,14 @@ def advanced_match_ledgers(A, map_a, B, map_b, date_tol=7, amt_tol=0.05):
                 "Match_Type": "Exact" if best['amt_diff']<0.01 else "Fuzzy/Partial",
                 "Score": round(best['score']*100,1)
             })
-            used.add(best.name)
+            used_b_indices.add(best.name) # best.name is the index
+            used_a_indices.add(a_row.name)
 
-    return pd.DataFrame(matches) if matches else pd.DataFrame(), A, B
+    # Prepare Final Dataframes
+    match_df = pd.DataFrame(matches)
+    
+    # Filter Unmatched Rows using original indices
+    unmatched_A = A[~A.index.isin(used_a_indices)].drop(columns=['_orig_idx', 'amt'], errors='ignore')
+    unmatched_B = B[~B.index.isin(used_b_indices)].drop(columns=['_orig_idx', 'amt'], errors='ignore')
+
+    return match_df, unmatched_A, unmatched_B
