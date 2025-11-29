@@ -216,3 +216,48 @@ if forecast_info:
 st.subheader("Blockchain Audit Hash")
 if not matches_df.empty:
     st.dataframe(matches_df[['A_Ref','B_Ref','Match_Type','Score']].assign(Blockchain_Hash=matches_df.apply(lambda r: create_blockchain_record(r.to_dict()), axis=1)))
+# Phase 4 additions
+
+st.subheader("Real-Time Reconciliation / Streaming")
+st.info("Phase 4 supports live reconciliation of incoming transactions via API/WebSocket (simulated here).")
+
+# Simulate real-time transaction input
+txn_input = st.text_area("Enter new transaction JSON", "{}")
+if st.button("Process Real-Time Transaction"):
+    import json
+    try:
+        new_txn = json.loads(txn_input)
+        realtime_matches = process_real_time_transaction(new_txn, df_b, map_a, map_b)
+        st.success(f"{len(realtime_matches)} matches found for incoming transaction")
+        if len(realtime_matches)>0:
+            st.dataframe(realtime_matches)
+    except Exception as e:
+        st.error(f"Error processing transaction: {e}")
+
+# Anomaly Detection Dashboard
+st.subheader("Anomaly Detection")
+from core import detect_reconciliation_anomalies
+if not matches_df.empty:
+    anomalies = detect_reconciliation_anomalies(matches_df)
+    if anomalies:
+        for a in anomalies:
+            st.warning(f"Anomaly Type: {a['type']} | Rows affected: {len(a['rows'])}")
+    else:
+        st.success("No anomalies detected")
+
+# Explainable AI Panel
+st.subheader("Explain Match Confidence")
+st.info("SHAP/LIME explanations for model-based matches")
+match_idx = st.number_input("Select Match Index", min_value=0, max_value=len(matches_df)-1 if not matches_df.empty else 0, step=1)
+if st.button("Explain Selected Match") and not matches_df.empty:
+    from core import explain_match_shap, load_model
+    model = load_model()
+    if model:
+        X = matches_df[['amt_diff_abs','amt_diff_pct','date_diff','ref_score','meta_eq']]  # features used
+        shap_vals = explain_match_shap(model, X, match_index=match_idx)
+        if shap_vals is not None:
+            st.write(shap_vals)
+        else:
+            st.info("Explainability not available")
+    else:
+        st.error("ML model not loaded")
