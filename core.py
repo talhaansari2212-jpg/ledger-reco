@@ -41,7 +41,7 @@ def advanced_match_ledgers(A, map_a, B, map_b, date_tol=7, amt_tol=0.05):
     A = A.copy()
     B = B.copy()
     
-    # Track original indices to filter later
+    # Track original indices to filter Unmatched rows later
     A['_orig_idx'] = A.index
     B['_orig_idx'] = B.index
 
@@ -53,11 +53,11 @@ def advanced_match_ledgers(A, map_a, B, map_b, date_tol=7, amt_tol=0.05):
     A['amt'] = A.apply(lambda r: get_amount(r, map_a), axis=1)
     B['amt'] = B.apply(lambda r: get_amount(r, map_b), axis=1)
 
-    # Filter strictly for matching process (ignoring 0 amounts)
-    # Note: We work on subsets but keep track of indices
+    # Filter for matching process (only positive amounts)
     sub_A = A[A['amt'] > 0].copy()
     sub_B = B[B['amt'] > 0].copy()
 
+    # Prepare fields for matching
     sub_A['date'] = pd.to_datetime(sub_A[map_a['date']], errors='coerce')
     sub_B['date'] = pd.to_datetime(sub_B[map_b['date']], errors='coerce')
     sub_A['ref'] = sub_A[map_a['ref']].astype(str).str.lower().str.strip()
@@ -67,11 +67,12 @@ def advanced_match_ledgers(A, map_a, B, map_b, date_tol=7, amt_tol=0.05):
     used_b_indices = set()
     used_a_indices = set()
 
-    for _, a_row in sub_A.iterrows():
+    for a_index, a_row in sub_A.iterrows():
         # Look in B where index not used yet
         cand = sub_B[~sub_B.index.isin(used_b_indices)].copy()
         if cand.empty: continue
 
+        # Calculate scores
         cand['amt_diff'] = (cand['amt'] - a_row['amt']).abs() / (a_row['amt'] + 1)
         cand['date_diff'] = (cand['date'] - a_row['date']).dt.days.abs().fillna(999)
         cand['ref_score'] = cand['ref'].apply(lambda x: fuzz.ratio(x, a_row['ref']))
@@ -90,13 +91,13 @@ def advanced_match_ledgers(A, map_a, B, map_b, date_tol=7, amt_tol=0.05):
                 "Match_Type": "Exact" if best['amt_diff']<0.01 else "Fuzzy/Partial",
                 "Score": round(best['score']*100,1)
             })
-            used_b_indices.add(best.name) # best.name is the index
-            used_a_indices.add(a_row.name)
+            used_b_indices.add(best.name) 
+            used_a_indices.add(a_index)
 
     # Prepare Final Dataframes
     match_df = pd.DataFrame(matches)
     
-    # Filter Unmatched Rows using original indices
+    # Filter Unmatched Rows using original indices (removing helper columns)
     unmatched_A = A[~A.index.isin(used_a_indices)].drop(columns=['_orig_idx', 'amt'], errors='ignore')
     unmatched_B = B[~B.index.isin(used_b_indices)].drop(columns=['_orig_idx', 'amt'], errors='ignore')
 
