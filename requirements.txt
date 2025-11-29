@@ -3,3 +3,11 @@ pandas
 openpyxl
 rapidfuzz
 numpy
+scikit-learn
+joblib
+jellyfish
+sentence-transformers
+transformers
+openai
+pytesseract
+pdfplumber
