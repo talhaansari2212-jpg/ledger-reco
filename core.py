@@ -2,6 +2,8 @@ import pandas as pd
 from rapidfuzz import fuzz
 import numpy as np
 
+# ... (detect_columns function remains unchanged) ...
+
 def detect_columns(df):
     cols = {'debit': None, 'credit': None, 'date': None, 'ref': None}
     keywords = {
@@ -36,7 +38,8 @@ def detect_columns(df):
 
     return cols
 
-def advanced_match_ledgers(A, map_a, B, map_b, date_tol=7, amt_tol=0.05):
+
+def advanced_match_ledgers(A, map_a, B, map_b, date_tol=7, amt_tol=0.05, abs_tol=50): # ₹50 Absolute Tolerance added
     # Data clean copy
     A = A.copy()
     B = B.copy()
@@ -73,23 +76,45 @@ def advanced_match_ledgers(A, map_a, B, map_b, date_tol=7, amt_tol=0.05):
         if cand.empty: continue
 
         # Calculate scores
-        cand['amt_diff'] = (cand['amt'] - a_row['amt']).abs() / (a_row['amt'] + 1)
-        cand['date_diff'] = (cand['date'] - a_row['date']).dt.days.abs().fillna(999)
-        cand['ref_score'] = cand['ref'].apply(lambda x: fuzz.ratio(x, a_row['ref']))
+        amt_diff_pct = (cand['amt'] - a_row['amt']).abs() / (a_row['amt'] + 1)
+        amt_diff_abs = (cand['amt'] - a_row['amt']).abs()
+        date_diff = (cand['date'] - a_row['date']).dt.days.abs().fillna(999)
+        ref_score = cand['ref'].apply(lambda x: fuzz.ratio(x, a_row['ref']))
+        
+        cand['amt_diff_pct'] = amt_diff_pct
 
-        cand['score'] = (1 - cand['amt_diff'].clip(0,1)) * 0.5 + \
-                        (1 - cand['date_diff'].clip(0,60)/60) * 0.3 + \
-                        (cand['ref_score']/100) * 0.2
+        cand['score'] = (1 - amt_diff_pct.clip(0,1)) * 0.5 + \
+                        (1 - date_diff.clip(0,60)/60) * 0.3 + \
+                        (ref_score/100) * 0.2
 
         best = cand.loc[cand['score'].idxmax()]
         
-        # Threshold Check
-        if best['score'] > 0.58 and best['amt_diff'] <= amt_tol*3 and best['date_diff'] <= date_tol*4:
+        # New Match Condition: Use percentage OR absolute tolerance
+        is_amt_ok = (best['amt_diff_pct'] <= amt_tol*3) | (amt_diff_abs.loc[best.name] <= abs_tol)
+        is_date_ok = best['date_diff'] <= date_tol*4
+        is_score_ok = best['score'] > 0.58
+
+        if is_score_ok and is_amt_ok and is_date_ok:
+            
+            remark = ""
+            match_type = "Exact"
+            if best['amt_diff_pct'] >= 0.01:
+                match_type = "Fuzzy/Partial (Amount)"
+                remark += f"Amount Diff: {amt_diff_abs.loc[best.name]:.2f} / "
+            if best['date_diff'] > 1:
+                match_type = "Fuzzy/Partial (Date)"
+                remark += f"Date Diff: {best['date_diff']} days / "
+            if best['ref_score'] < 95:
+                 match_type = "Fuzzy/Partial (Ref)"
+                 remark += f"Ref Score: {best['ref_score']:.1f}% / "
+            
+            
             matches.append({
                 "A_Date": a_row[map_a['date']], "A_Ref": a_row[map_a['ref']], "A_Amount": a_row['amt'],
                 "B_Date": best[map_b['date']], "B_Ref": best[map_b['ref']], "B_Amount": best['amt'],
-                "Match_Type": "Exact" if best['amt_diff']<0.01 else "Fuzzy/Partial",
-                "Score": round(best['score']*100,1)
+                "Match_Type": match_type,
+                "Score": round(best['score']*100,1),
+                "Remarks": remark.strip("/ ") if match_type != "Exact" else "Exact Match"
             })
             used_b_indices.add(best.name) 
             used_a_indices.add(a_index)
@@ -100,5 +125,11 @@ def advanced_match_ledgers(A, map_a, B, map_b, date_tol=7, amt_tol=0.05):
     # Filter Unmatched Rows using original indices (removing helper columns)
     unmatched_A = A[~A.index.isin(used_a_indices)].drop(columns=['_orig_idx', 'amt'], errors='ignore')
     unmatched_B = B[~B.index.isin(used_b_indices)].drop(columns=['_orig_idx', 'amt'], errors='ignore')
+    
+    # Add Remarks to Unmatched DataFrames
+    if not unmatched_A.empty:
+        unmatched_A['Remarks'] = 'Missing from Supplier Statement (Supplier ke ledger mein yeh entry nahi hai)'
+    if not unmatched_B.empty:
+        unmatched_B['Remarks'] = 'Missing from Our Ledger (AP) (Hamare ledger mein yeh entry nahi hai)'
 
     return match_df, unmatched_A, unmatched_B
