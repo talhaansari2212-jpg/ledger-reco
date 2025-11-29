@@ -220,3 +220,96 @@ def advanced_match_ledgers(A, map_a, B, map_b,
     unmatched_A = A[~A['_idx'].isin(match_df['A_index'])].drop(columns=['_idx','amt'], errors='ignore')
     unmatched_B = B[~B['_idx'].isin(match_df['B_index'])].drop(columns=['_idx','amt'], errors='ignore')
     return match_df, unmatched_A.reset_index(drop=True), unmatched_B.reset_index(drop=True)
+# Phase 2: Bank + Partial Payments + Multi-Currency
+# Add to core.py (after Phase 1 code)
+
+# Bank Codes Regex
+BANK_CODE_PATTERN = re.compile(r'\b(NEFT|RTGS|IMPS|UPI)\b', re.IGNORECASE)
+
+def extract_bank_code(text):
+    if pd.isna(text): return ""
+    m = BANK_CODE_PATTERN.search(str(text))
+    return m.group(1).upper() if m else ""
+
+def apply_fx_conversion(df, currency_col='currency', amt_col='amt', fx_rates=None, base_currency='INR'):
+    """
+    Convert amounts to base currency using provided fx_rates dict
+    fx_rates = {('USD','INR'): 83.2, ('EUR','INR'): 90.1, ...}
+    """
+    if fx_rates is None:
+        fx_rates = {}  # assume 1:1 if rates missing
+    def convert(row):
+        cur = row.get(currency_col,'INR')
+        amt = row.get(amt_col,0)
+        if cur==base_currency: return amt
+        rate = fx_rates.get((cur,base_currency),1.0)
+        return amt*rate
+    df[amt_col] = df.apply(convert, axis=1)
+    return df
+
+def detect_partial_payments(sub_A, sub_B, used_a_indices, used_b_indices, tolerance=0.1, allocation='FIFO'):
+    """
+    Detect partial payments and allocate amounts
+    allocation: 'FIFO' or 'LIFO'
+    Returns pseudo-matches list
+    """
+    partial_matches=[]
+    a_ref_groups=sub_A.groupby('ref')
+    b_ref_groups=sub_B.groupby('ref')
+    for ref, a_group in a_ref_groups:
+        if ref in b_ref_groups.groups:
+            b_group=b_ref_groups.get_group(ref)
+            a_total=a_group['amt'].sum()
+            b_total=b_group['amt'].sum()
+            if abs(a_total-b_total)/max(a_total,b_total)<tolerance:
+                # Allocate payments
+                a_sorted=a_group.sort_index(ascending=(allocation=='FIFO'))
+                b_sorted=b_group.sort_index(ascending=(allocation=='FIFO'))
+                for a_idx,b_idx in zip(a_sorted.index,b_sorted.index):
+                    partial_matches.append({
+                        'A_index': int(a_idx),
+                        'B_index': int(b_idx),
+                        'A_Amount': float(a_sorted.loc[a_idx,'amt']),
+                        'B_Amount': float(b_sorted.loc[b_idx,'amt']),
+                        'Ref': ref,
+                        'Match_Type': 'Partial Payment'
+                    })
+    return partial_matches
+
+# Integration in advanced_match_ledgers:
+# 1. Before candidate selection: extract bank codes
+sub_A['bank_code'] = sub_A[map_a.get('txn_code')].astype(str).fillna('').str.upper() if map_a.get('txn_code') else ''
+sub_B['bank_code'] = sub_B[map_b.get('txn_code')].astype(str).fillna('').str.upper() if map_b.get('txn_code') else ''
+
+# 2. Apply FX conversion if currency column exists
+if 'currency' in sub_A.columns and 'currency' in sub_B.columns:
+    # fx_rates can be fetched from API or user-provided dict
+    fx_rates = {('USD','INR'):83.2, ('EUR','INR'):90.1}  # example
+    sub_A = apply_fx_conversion(sub_A, currency_col='currency', amt_col='amt', fx_rates=fx_rates)
+    sub_B = apply_fx_conversion(sub_B, currency_col='currency', amt_col='amt', fx_rates=fx_rates)
+
+# 3. Candidate filtering: include bank code match boost
+# In score_rule calculation:
+# cand['bank_eq'] = cand['bank_code'] == a_row['bank_code']
+# cand['score_rule'] += cand['bank_eq'].astype(int)*0.05
+
+# 4. After main loop: detect partial payments if enable_partial_payments=True
+if enable_partial_payments:
+    partials = detect_partial_payments(sub_A, sub_B, used_a, used_b)
+    for p in partials:
+        matches.append({
+            "A_index": p['A_index'],
+            "B_index": p['B_index'],
+            "A_Date": sub_A.loc[p['A_index'], 'date'] if 'date' in sub_A.columns else "",
+            "A_Ref": p['Ref'],
+            "A_Amount": p['A_Amount'],
+            "B_Date": sub_B.loc[p['B_index'], 'date'] if 'date' in sub_B.columns else "",
+            "B_Ref": p['Ref'],
+            "B_Amount": p['B_Amount'],
+            "Match_Type": p['Match_Type'],
+            "Score": 75.0,
+            "Remarks": "Partial Payment",
+            "Hash": hashlib.sha256(f"partial_{p['Ref']}_{p['A_Amount']}".encode()).hexdigest()[:16]
+        })
+
+# Finally: concatenate with main matches and return DataFrames as before
