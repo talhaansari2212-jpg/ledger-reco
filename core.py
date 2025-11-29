@@ -117,6 +117,23 @@ class TieredMatcher:
             if jellyfish.soundex(a)==jellyfish.soundex(b): scores.append(1.0)
             if jellyfish.metaphone(a)==jellyfish.metaphone(b): scores.append(1.0)
         return max(scores) if scores else 0.0
+    # core.py mein yeh function add karein (kisi bhi Helpers section mein)
+def apply_fx_conversion(df, currency_col, amt_col, fx_rates, base_currency="INR"):
+    """Converts amounts to base currency using provided FX rates."""
+    df_out = df.copy()
+    
+    # Simple conversion logic placeholder
+    if currency_col in df_out.columns:
+        df_out['original_currency'] = df_out[currency_col]
+        for (from_curr, to_curr), rate in fx_rates.items():
+            if to_curr == base_currency:
+                # Convert non-base currency amounts
+                df_out.loc[df_out[currency_col] == from_curr, amt_col] *= rate
+        
+        # Base currency ko base currency se replace karein takay woh next conversion se bach jaye
+        df_out[currency_col] = base_currency
+        
+    return df_out
 def detect_partial_payments(df_a, df_b, used_a, used_b):
     """Placeholder for complex partial payment detection logic."""
     # Is function mein partial payment ki complex logic aayegi.
