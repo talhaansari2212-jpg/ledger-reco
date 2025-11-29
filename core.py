@@ -65,7 +65,20 @@ def advanced_match_ledgers(A, map_a, B, map_b, date_tol=7, amt_tol=0.05, abs_tol
     # Filter for matching process (only positive amounts)
     sub_A = A[A['amt'] > 0].copy()
     sub_B = B[B['amt'] > 0].copy()
-
+    # Filter for matching process (only positive amounts)
+    sub_A = A[A['amt'] > 0].copy()
+    sub_B = B[B['amt'] > 0].copy()
+    
+    # --- NEW SAFETY CHECK ---
+    if sub_A.empty or sub_B.empty:
+        # Agar koi bhi data zero amount ki wajah se empty ho gaya, to error ki bajaye empty result de do
+        return pd.DataFrame(), A.drop(columns=['_orig_idx', 'amt'], errors='ignore'), B.drop(columns=['_orig_idx', 'amt'], errors='ignore')
+    # --- END SAFETY CHECK ---
+    
+    # Prepare fields for matching
+    sub_A['date'] = pd.to_datetime(sub_A[map_a['date']], errors='coerce')
+    # ... (rest of the code)
+    
     # Prepare fields for matching
     sub_A['date'] = pd.to_datetime(sub_A[map_a['date']], errors='coerce')
     sub_B['date'] = pd.to_datetime(sub_B[map_b['date']], errors='coerce')
