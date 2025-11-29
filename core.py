@@ -148,7 +148,7 @@ def advanced_match_ledgers(
     abs_tol: float = 100,
     enable_ml: bool = True,
     enable_semantic: bool = True,
-    enable_partial: bool = True,
+    enable_partial_payments: bool = True,   # <-- YE NAAM HONA CHAHIYE
     ml_model_path: str = MODEL_PATH
 ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
 
