@@ -370,4 +370,66 @@ if 'narration' in sub_A.columns and 'narration' in sub_B.columns:
 # After matches_df is generated, call:
 # forecast_info = forecast_cash_flow(matches_df)
 # This info can be shown in UI
+# Phase 4 additions
+
+# ----------------- Real-time API Stub -----------------
+# For illustration: Flask/FastAPI can call advanced_match_ledgers on new transaction
+def process_real_time_transaction(new_txn, ledger_B, map_a, map_b):
+    """
+    Accept a new ledger transaction (dict or DataFrame row),
+    perform matching against existing ledger B in real-time.
+    """
+    df_new = pd.DataFrame([new_txn])
+    matches, _, _ = advanced_match_ledgers(df_new, map_a, ledger_B, map_b)
+    return matches
+
+# ----------------- Federated Learning Stub -----------------
+def federated_update(local_model, global_model_weights, alpha=0.5):
+    """
+    Combine local model weights with global model weights
+    alpha = learning rate / contribution weight
+    """
+    for local_coef, global_coef in zip(local_model.estimators_, global_model_weights):
+        # simplistic average update
+        # (in real scenario, use PyTorch / TensorFlow model weights)
+        pass
+    return local_model
+
+# ----------------- Anomaly Detection -----------------
+def detect_reconciliation_anomalies(df):
+    """
+    Detect duplicates, unusual amounts, timing issues
+    """
+    df = df.copy()
+    anomalies = []
+    # Duplicate check
+    duplicate_rows = df[df.duplicated(['A_Ref','A_Amount'], keep=False)]
+    if not duplicate_rows.empty:
+        anomalies.append({'type':'Duplicate','rows':duplicate_rows.index.tolist()})
+    # Extreme amount outliers
+    if 'A_Amount' in df.columns:
+        mean_amt = df['A_Amount'].mean()
+        std_amt = df['A_Amount'].std()
+        outliers = df[(df['A_Amount']>(mean_amt+3*std_amt)) | (df['A_Amount']<(mean_amt-3*std_amt))]
+        if not outliers.empty:
+            anomalies.append({'type':'Amount Outlier','rows':outliers.index.tolist()})
+    # Timing mismatch (date_diff > 180 days)
+    if 'date_diff' in df.columns:
+        timing_issues = df[df['date_diff']>180]
+        if not timing_issues.empty:
+            anomalies.append({'type':'Timing Issue','rows':timing_issues.index.tolist()})
+    return anomalies
+
+# ----------------- Explainable AI -----------------
+def explain_match_shap(model, X, match_index=0):
+    """
+    Compute SHAP values for a given match row
+    """
+    try:
+        import shap
+        explainer = shap.TreeExplainer(model)
+        shap_values = explainer.shap_values(X)
+        return shap_values[1][match_index]
+    except Exception:
+        return None
 
