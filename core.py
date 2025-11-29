@@ -313,3 +313,61 @@ if enable_partial_payments:
         })
 
 # Finally: concatenate with main matches and return DataFrames as before
+# Phase 3 additions to core.py
+
+# ------------------------- Predictive Cash Flow -------------------------
+def forecast_cash_flow(matches_df, date_col='A_Date', amt_col='A_Amount'):
+    """Predict next month's cash flow based on historical matches"""
+    if matches_df.empty: return {}
+    df = matches_df.copy()
+    df['date'] = pd.to_datetime(df[date_col], errors='coerce')
+    df['amt'] = pd.to_numeric(df[amt_col], errors='coerce')
+    df = df.dropna(subset=['date','amt'])
+    if df.empty: return {}
+    
+    # Monthly aggregation
+    monthly = df.groupby(df['date'].dt.to_period('M'))['amt'].sum()
+    # Linear trend fit
+    x = np.arange(len(monthly))
+    y = monthly.values
+    if len(x)<2: return {'next_month_forecast': y[-1] if len(y)>0 else 0}
+    trend = np.polyfit(x, y, 1)
+    forecast = trend[0]*(len(x)) + trend[1]
+    return {'next_month_forecast': forecast, 'trend_slope': trend[0], 'monthly_history': monthly}
+
+# ------------------------- Blockchain Audit -------------------------
+def create_blockchain_record(match_data):
+    """Generate immutable hash for match data"""
+    data_str = str(match_data)
+    return hashlib.sha256(data_str.encode()).hexdigest()
+
+# ------------------------- Semantic Similarity -------------------------
+def compute_semantic_similarity(narration_a, narration_b):
+    """Return 0-1 similarity score using sentence-transformers"""
+    if sbert_model is None: return 0.0
+    if pd.isna(narration_a) or pd.isna(narration_b): return 0.0
+    embs_a = sbert_model.encode([str(narration_a)])
+    embs_b = sbert_model.encode([str(narration_b)])
+    sim = np.dot(embs_a, embs_b.T) / (np.linalg.norm(embs_a)*np.linalg.norm(embs_b)+1e-9)
+    return float(sim[0][0])
+
+# ------------------------- Integration in advanced_match_ledgers -------------------------
+# 1. Compute semantic similarity if narration fields exist
+if 'narration' in sub_A.columns and 'narration' in sub_B.columns:
+    sub_A['narration'] = sub_A['narration'].fillna('')
+    sub_B['narration'] = sub_B['narration'].fillna('')
+    
+# During candidate scoring
+# cand['semantic_sim'] = cand['B_index'].apply(lambda idx: compute_semantic_similarity(a_row['narration'], sub_B.loc[idx,'narration']))
+
+# Add semantic similarity to combined score
+# cand['score_combined'] = cand['score_rule']*0.4 + cand['ml_prob']*0.4 + cand['semantic_sim']*0.2
+
+# 2. Generate blockchain hash for each match
+# match_record['Blockchain_Hash'] = create_blockchain_record(match_record)
+
+# 3. Include forecast data
+# After matches_df is generated, call:
+# forecast_info = forecast_cash_flow(matches_df)
+# This info can be shown in UI
+
