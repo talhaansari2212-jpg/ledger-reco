@@ -75,15 +75,18 @@ if file_a and file_b:
                     'ref': st.selectbox("ریف/انوائس نمبر" if lang == "اردو" else "Ref/Invoice No", [None]+list(B.columns), index=get_idx(B, cols_b.get('ref'))),
                 }
 
-        col1, col2 = st.columns(2)
-        date_tol = col1.slider("تاریخ کی رواداری (دن)" if lang == "اردu" else "Date Tolerance (days)", 0, 30, 7)
+        col1, col2, col3 = st.columns(3) # NEW: 3 columns for 3 sliders
+        date_tol = col1.slider("تاریخ کی رواداری (دن)" if lang == "اردو" else "Date Tolerance (days)", 0, 30, 7)
         amt_tol = col2.slider("رقم کی رواداری (%)" if lang == "اردو" else "Amount Tolerance (%)", 0.0, 20.0, 5.0) / 100
+        # NEW SLIDER: Absolute Tolerance
+        abs_tol = col3.slider("رقم کی مطلق رواداری (₹)" if lang == "اردو" else "Absolute Tolerance (₹)", 0, 500, 50) 
+
 
         if st.button(btn_run, type="primary"):
             with st.spinner("میچنگ ہو رہی ہے..." if lang == "اردو" else "Matching in progress..."):
                 
-                # RUNNING MATCHING LOGIC (now returns correct unmatched data)
-                matches, un_a, un_b = advanced_match_ledgers(A, map_a, B, map_b, date_tol, amt_tol)
+                # RUNNING MATCHING LOGIC - Passing abs_tol
+                matches, un_a, un_b = advanced_match_ledgers(A, map_a, B, map_b, date_tol, amt_tol, abs_tol) 
                 
                 # EXPORT LOGIC
                 buffer = io.BytesIO()
@@ -115,7 +118,7 @@ if file_a and file_b:
 
                 # Preview Table
                 if not matches.empty:
-                    preview_cols = ['A_Date', 'A_Ref', 'A_Amount', 'B_Date', 'B_Ref', 'B_Amount', 'Match_Type']
+                    preview_cols = ['A_Date', 'A_Ref', 'A_Amount', 'B_Date', 'B_Ref', 'B_Amount', 'Match_Type', 'Remarks'] # Added Remarks
                     st.subheader("پہلے 10 میچز" if lang == "اردو" else "Top 10 Matches")
                     cols_to_show = [c for c in preview_cols if c in matches.columns]
                     st.dataframe(matches[cols_to_show].head(10))
