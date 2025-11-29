@@ -319,3 +319,8 @@ def detect_anomalies(matches_df: pd.DataFrame) -> List[Dict]:
         if not outliers.empty:
             anomalies.append({"type": "Large Amount Outlier", "count": len(outliers)})
     return anomalies
+match_df = pd.DataFrame(matches)
+if match_df.empty:
+    # Ensure mandatory columns exist even if empty
+    mandatory_cols = ["A_index", "B_index", "A_Amount", "B_Amount", "Confidence", "Match_Type"]
+    match_df = pd.DataFrame(columns=mandatory_cols)
