@@ -37,7 +37,17 @@ df_a = load_file(file_a)
 df_b = load_file(file_b)
 
 st.success(f"Loaded → Ledger A: {len(df_a):,} rows | Ledger B: {len(df_b):,} rows")
+if matches.empty:
+    st.warning("No matches found between Ledger A and Ledger B based on current settings.")
+    # Exit or continue to display unmatched tabs
+    tab1, tab2 = st.tabs(["Unmatched A", "Unmatched B"])
+    with tab1: st.dataframe(un_a)
+    with tab2: st.dataframe(un_b)
+    st.stop() # Stop further execution of result display
 
+# Agar matches hain, toh aage badhein
+c1, c2, c3 = st.columns(3)
+# ... baaki ka code jaise metrics, chart, dataframe display
 # Auto Detect Columns
 map_a = detect_columns(df_a)
 map_b = detect_columns(df_b)
