@@ -11,3 +11,10 @@ transformers
 openai
 pytesseract
 pdfplumber
+streamlit
+pandas
+numpy
+scikit-learn
+rapidfuzz
+jellyfish
+sentence-transformers
