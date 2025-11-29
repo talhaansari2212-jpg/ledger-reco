@@ -2,21 +2,24 @@ import streamlit as st
 import pandas as pd
 import io
 
-# --- FIX: Importing Core Functions ---
-# Yeh line zaroori hai warna code crash hoga
+# --- FIX: Core Functions ko Import karna zaroori hai ---
 try:
     from core import detect_columns, advanced_match_ledgers
 except ImportError:
-    st.error("Error: core.py file nahi mili. Make sure karein ke dono files aik hi folder mein hain.")
+    st.error("Error: core.py file nahi mili. Please check karein ke dono files aik hi folder mein hain aur core.py ka naam sahi hai.")
     st.stop()
 
-# Helper function defined at top
+# Helper function (isay upar rakhna zaroori tha)
 def get_idx(df, col):
     opts = [None] + list(df.columns)
     return opts.index(col) if col and col in df.columns else 0
 
-# Language Selection
-lang = st.sidebar.selectbox("زبان / Language", ["اردو", "English"])
+# Language Selection (Default: English)
+lang = st.sidebar.selectbox(
+    "زبان / Language", 
+    ["English", "اردو"], # English is now the first option
+    index=0 # Default index is 0 (English)
+) 
 
 if lang == "اردو":
     st.title("سمارٹ لاجرک ریکونسیلیشن ٹول")
@@ -73,13 +76,13 @@ if file_a and file_b:
                 }
 
         col1, col2 = st.columns(2)
-        date_tol = col1.slider("تاریخ کی رواداری (دن)" if lang == "اردو" else "Date Tolerance (days)", 0, 30, 7)
+        date_tol = col1.slider("تاریخ کی رواداری (دن)" if lang == "اردu" else "Date Tolerance (days)", 0, 30, 7)
         amt_tol = col2.slider("رقم کی رواداری (%)" if lang == "اردو" else "Amount Tolerance (%)", 0.0, 20.0, 5.0) / 100
 
         if st.button(btn_run, type="primary"):
             with st.spinner("میچنگ ہو رہی ہے..." if lang == "اردو" else "Matching in progress..."):
                 
-                # RUNNING MATCHING LOGIC
+                # RUNNING MATCHING LOGIC (now returns correct unmatched data)
                 matches, un_a, un_b = advanced_match_ledgers(A, map_a, B, map_b, date_tol, amt_tol)
                 
                 # EXPORT LOGIC
@@ -114,7 +117,6 @@ if file_a and file_b:
                 if not matches.empty:
                     preview_cols = ['A_Date', 'A_Ref', 'A_Amount', 'B_Date', 'B_Ref', 'B_Amount', 'Match_Type']
                     st.subheader("پہلے 10 میچز" if lang == "اردو" else "Top 10 Matches")
-                    # Safe column selection
                     cols_to_show = [c for c in preview_cols if c in matches.columns]
                     st.dataframe(matches[cols_to_show].head(10))
                 else:
